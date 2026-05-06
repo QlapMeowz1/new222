@@ -1272,6 +1272,15 @@ function formatUptime(seconds) {
     
     return parts.join(' ');
 }
+const http = require('http');
+const PORT = process.env.PORT || 10000;
 
+// Tạo HTTP server đơn giản để Render detect port
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Bot is running!\n');
+}).listen(PORT, '0.0.0.0', () => {
+    console.log(`HTTP server listening on port ${PORT}`);
+});
 // Đăng nhập
 client.login(DISCORD_TOKEN);
