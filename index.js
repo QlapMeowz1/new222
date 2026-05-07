@@ -1242,27 +1242,33 @@ async function playSong(guildId) {
             throw new Error('Không thể stream bài hát sau khi thử tất cả các cách');
         }
 
-        // Xác định input type cho createAudioResource
+        const { StreamType } = require('@discordjs/voice');
+        
         let inputType;
         switch(streamType) {
             case 'opus':
-                inputType = 0; // StreamType.Opus
+                inputType = StreamType.Opus;
                 break;
             case 'ogg':
-                inputType = 1; // StreamType.OggOpus  
+            case 'ogg/opus':
+                inputType = StreamType.OggOpus;
                 break;
             case 'webm':
-                inputType = 2; // StreamType.WebmOpus
+            case 'webm/opus':
+                inputType = StreamType.WebmOpus;
                 break;
             case 'raw':
-                inputType = 3; // StreamType.Raw
+                inputType = StreamType.Raw;
                 break;
             default:
-                inputType = 0; // Mặc định là Opus
+                // Quan trọng: Dùng OggOpus làm mặc định thay vì Opus
+                inputType = StreamType.OggOpus;
+                console.log(`⚠️ Stream type không xác định (${streamType}), dùng OggOpus mặc định`);
         }
 
-        console.log(`🎵 Input type: ${inputType} (${streamType})`);
+        console.log(`🎵 Input type: ${inputType} (streamType: ${streamType})`);
 
+        // Tạo resource với StreamType enum
         serverQueue.resource = createAudioResource(stream, { 
             inputType: inputType,
             inlineVolume: true
