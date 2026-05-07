@@ -132,6 +132,9 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.editReply({ content: '❌ Phiên tìm kiếm đã hết hạn!', embeds: [], components: [] });
         }
         
+        // Tự xóa query cache sau 30 giây
+        setTimeout(() => { queryCache.delete(`query_${userId}`); }, 30000);
+        
         if (user.id !== userId) {
             return interaction.followUp({ content: '❌ Bạn không phải người dùng lệnh này!', ephemeral: true });
         }
@@ -264,7 +267,7 @@ client.on('messageCreate', async (message) => {
     } catch (e) { console.error(e); message.reply('❌ Lỗi!').catch(()=>{}); }
 });
 
-// ============ PLAY HANDLER ============
+// ============ PLAY HANDLER (ĐÃ SỬA - KHÔNG awaitMessageComponent) ============
 async function playHandler(message, query) {
     const vc = message.member?.voice?.channel;
     if (!vc) return message.reply('❌ Vào kênh thoại!');
@@ -302,7 +305,7 @@ async function playHandler(message, query) {
             return;
         }
         
-        // Tìm kiếm
+        // Tìm kiếm - KHÔNG awaitMessageComponent
         queryCache.set(`query_${message.author.id}`, query);
         
         const embed = new EmbedBuilder().setColor('#0099FF').setTitle(`🔍 Chọn nguồn: "${query}"`).setDescription('Chọn nền tảng:').setFooter({text:'30 giây'});
@@ -312,18 +315,13 @@ async function playHandler(message, query) {
             new ButtonBuilder().setCustomId(`search_both_${message.author.id}`).setLabel('Cả hai').setStyle(ButtonStyle.Success).setEmoji('🎶')
         );
         
-        const resp = await message.reply({ embeds: [embed], components: [row] });
+        await message.reply({ embeds: [embed], components: [row] });
+        // Nút được xử lý bởi interactionCreate
         
-        const filter = i => ['search_yt_','search_sc_','search_both_'].some(p => i.customId.startsWith(p)) && i.user.id === message.author.id;
-        try {
-            await resp.awaitMessageComponent({ filter, time: 30000 });
-        } catch {
-            await resp.edit({ embeds: [new EmbedBuilder().setColor('#FF0000').setTitle('⏰ Hết giờ!')], components: [] }).catch(()=>{});
-            queryCache.delete(`query_${message.author.id}`);
-        }
     } catch (e) { console.error(e); message.reply('❌ Lỗi!').catch(()=>{}); }
 }
 
+// ============ SEARCH HANDLER (ĐÃ SỬA - KHÔNG awaitMessageComponent) ============
 async function searchHandler(message, query) {
     queryCache.set(`query_${message.author.id}`, query);
     
@@ -334,15 +332,8 @@ async function searchHandler(message, query) {
         new ButtonBuilder().setCustomId(`src_both_${message.author.id}`).setLabel('Cả hai').setStyle(ButtonStyle.Success).setEmoji('🎶')
     );
     
-    const resp = await message.reply({ embeds: [embed], components: [row] });
-    
-    const filter = i => ['src_yt_','src_sc_','src_both_'].some(p => i.customId.startsWith(p)) && i.user.id === message.author.id;
-    try {
-        await resp.awaitMessageComponent({ filter, time: 30000 });
-    } catch {
-        await resp.edit({ embeds: [new EmbedBuilder().setColor('#FF0000').setTitle('⏰ Hết giờ!')], components: [] }).catch(()=>{});
-        queryCache.delete(`query_${message.author.id}`);
-    }
+    await message.reply({ embeds: [embed], components: [row] });
+    // Nút được xử lý bởi interactionCreate
 }
 
 // ============ CÁC HANDLER CÒN LẠI (GIỮ NGUYÊN) ============
