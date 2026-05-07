@@ -383,42 +383,160 @@ async function playSong(guildId) {
     }
     const song = q.songs[0];
     try {
-        let stream = null, streamType = null;
-        const result = await play.stream(song.url).catch(async () => {
-            const sr = await play.search(song.name || song.title, { source: song.url?.includes('soundcloud') ? { soundcloud: "tracks" } : { youtube: "video" }, limit: 3 });
-            if (sr?.length) for (const r of sr) { try { return await play.stream(r.url); } catch {} }
-            return null;
-        });
-        if (result?.stream) { stream = result.stream; streamType = result.type; }
-        if (!stream) throw new Error('Không thể stream');
-        
+        let stream = null;
+        let streamType = null;
+
+        console.log(`🎵 Đang thử stream: ${song.name || song.title} - ${song.url}`);
+
+        try {
+            console.log('🎵 Cách 1: Stream trực tiếp');
+            const result = await play.stream(song.url);
+            if (result?.stream) {
+                stream = result.stream;
+                streamType = result.type;
+                console.log(`✅ Cách 1 thành công! Type: ${streamType}`);
+            }
+        } catch (e1) {
+            console.log(`❌ Cách 1 thất bại: ${e1.message}`);
+        }
+
+        if (!stream) {
+            try {
+                console.log(`🔍 Cách 2: Tìm kiếm "${song.name || song.title}"`);
+                const searchSource = song.url?.includes('soundcloud') 
+                    ? { soundcloud: "tracks" } 
+                    : { youtube: "video" };
+                
+                const searchResults = await play.search(song.name || song.title, { 
+                    source: searchSource, 
+                    limit: 5 
+                });
+                
+                if (searchResults && searchResults.length > 0) {
+                    for (const result of searchResults) {
+                        try {
+                            console.log(`🎵 Thử stream kết quả: ${result.name || result.title} - ${result.url}`);
+                            const streamResult = await play.stream(result.url);
+                            if (streamResult?.stream) {
+                                stream = streamResult.stream;
+                                streamType = streamResult.type;
+                                // Cập nhật song nếu dùng kết quả khác
+                                if (result.url !== song.url) {
+                                    q.songs[0] = result;
+                                    console.log(`✅ Đã thay thế bằng: ${result.name || result.title}`);
+                                }
+                                console.log(`✅ Cách 2 thành công! Type: ${streamType}`);
+                                break;
+                            }
+                        } catch (e) {
+                            console.log(`❌ Thất bại với: ${result.name || result.title} - ${e.message}`);
+                            continue;
+                        }
+                    }
+                }
+            } catch (e2) {
+                console.log(`❌ Cách 2 thất bại: ${e2.message}`);
+            }
+        }
+
+        if (!stream && !song.url?.includes('soundcloud')) {
+            try {
+                console.log('🔍 Cách 3: Thử với video_info trước');
+                const videoInfo = await play.video_info(song.url).catch(() => null);
+                if (videoInfo?.url) {
+                    const result = await play.stream(videoInfo.url);
+                    if (result?.stream) {
+                        stream = result.stream;
+                        streamType = result.type;
+                        console.log(`✅ Cách 3 thành công! Type: ${streamType}`);
+                    }
+                }
+            } catch (e3) {
+                console.log(`❌ Cách 3 thất bại: ${e3.message}`);
+            }
+        }
+
+        if (!stream && song.url?.includes('soundcloud')) {
+            try {
+                console.log('🔍 Cách 4: Thử với soundcloud info');
+                const scInfo = await play.soundcloud(song.url).catch(() => null);
+                if (scInfo?.url) {
+                    const result = await play.stream(scInfo.url);
+                    if (result?.stream) {
+                        stream = result.stream;
+                        streamType = result.type;
+                        console.log(`✅ Cách 4 thành công! Type: ${streamType}`);
+                    }
+                }
+            } catch (e4) {
+                console.log(`❌ Cách 4 thất bại: ${e4.message}`);
+            }
+        }
+
+        if (!stream) {
+            throw new Error('Không thể stream - thử !search để tìm bản khác');
+        }
+
         let it;
         switch(streamType) {
             case 'opus': it = StreamType.Opus; break;
             case 'ogg': case 'ogg/opus': it = StreamType.OggOpus; break;
             case 'webm': case 'webm/opus': it = StreamType.WebmOpus; break;
             case 'raw': it = StreamType.Raw; break;
-            default: it = StreamType.OggOpus;
+            default: 
+                it = StreamType.OggOpus;
+                console.log(`⚠️ Stream type lạ (${streamType}), dùng OggOpus`);
         }
-        
+
+        console.log(`🎵 Input type: ${it}`);
+
         q.resource = createAudioResource(stream, { inputType: it, inlineVolume: true });
         try { if (q.resource?.volume) q.resource.volume.setVolume(q.volume || 0.3); } catch {}
         
         if (!q.player) {
             q.player = createAudioPlayer();
-            q.player.on('error', (e) => { console.error(e); q.songs.shift(); setTimeout(() => playSong(guildId), 1000); });
-            q.player.on('stateChange', (o, n) => { if (n.status === AudioPlayerStatus.Idle && o.status !== AudioPlayerStatus.Idle) { q.loop ? q.songs.push(q.songs.shift()) : q.songs.shift(); setTimeout(() => playSong(guildId), 500); } });
+            q.player.on('error', (e) => { 
+                console.error('❌ Player error:', e); 
+                q.songs.shift(); 
+                setTimeout(() => playSong(guildId), 1000); 
+            });
+            q.player.on('stateChange', (o, n) => { 
+                if (n.status === AudioPlayerStatus.Idle && o.status !== AudioPlayerStatus.Idle) { 
+                    q.loop ? q.songs.push(q.songs.shift()) : q.songs.shift(); 
+                    setTimeout(() => playSong(guildId), 500); 
+                } 
+            });
             q.connection.subscribe(q.player);
         }
+        
         q.player.play(q.resource);
+        console.log('▶️ Đang phát:', song.name || song.title);
         
         const src = song.url?.includes('soundcloud') ? '☁️ SC' : '📺 YT';
-        q.textChannel?.send({ embeds: [new EmbedBuilder().setColor('#FF0000').setTitle('▶️ Đang phát').setDescription(`[${song.name||song.title}](${song.url})`).addFields({name:'👤',value:song.user?.name||song.channel?.name||'?',inline:true},{name:'🔗',value:src,inline:true})] }).catch(()=>{});
+        q.textChannel?.send({ 
+            embeds: [new EmbedBuilder().setColor('#FF0000').setTitle('▶️ Đang phát')
+                .setDescription(`[${song.name||song.title}](${song.url})`)
+                .addFields(
+                    {name:'👤',value:song.user?.name||song.channel?.name||'?',inline:true},
+                    {name:'🔗',value:src,inline:true}
+                )] 
+        }).catch(()=>{});
+        
         addToHistory(guildId, song);
+        
     } catch (e) {
-        console.error(e);
-        q.textChannel?.send(`❌ Lỗi: \`${song.name||song.title}\` - ${e.message}`).catch(()=>{});
-        q.songs.shift(); q.resource = null;
+        console.error('❌ Lỗi playSong:', e.message);
+        q.textChannel?.send({ 
+            embeds: [new EmbedBuilder().setColor('#FF0000').setTitle('❌ Lỗi phát nhạc')
+                .setDescription(`**${song.name||song.title}**`)
+                .addFields(
+                    {name:'📝 Lỗi',value:e.message},
+                    {name:'💡 Gợi ý',value:`Dùng \`.search ${(song.name||song.title||'').split(' ').slice(0,3).join(' ')}\` để tìm bản khác`}
+                )] 
+        }).catch(()=>{});
+        
+        q.songs.shift(); 
+        q.resource = null;
         setTimeout(() => { if (q.songs.length) playSong(guildId); }, 2000);
     }
 }
