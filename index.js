@@ -2,6 +2,7 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus, StreamType } = require('@discordjs/voice');
 const play = require('play-dl');
+const ytdl = require('ytdl-core');
 const fs = require('fs');
 const path = require('path');
 
@@ -32,7 +33,7 @@ const client = new Client({
 const queues = new Map();
 const history = new Map();
 const searchCache = new Map();
-const queryCache = new Map(); // Cache query gốc
+const queryCache = new Map();
 
 const filters = {
     'bassboost': 'bass=g=10', 'nightcore': 'atempo=1.3,asetrate=48000*1.25',
@@ -111,19 +112,16 @@ client.on('interactionCreate', async (interaction) => {
     
     const { customId, guildId, member, user } = interaction;
     
-    // Xử lý nút chọn nguồn
     if (customId.startsWith('src_yt_') || customId.startsWith('src_sc_') || customId.startsWith('src_both_') ||
         customId.startsWith('search_yt_') || customId.startsWith('search_sc_') || customId.startsWith('search_both_')) {
         
         await interaction.deferUpdate();
         
-        // Parse: src_yt_USERID hoặc search_sc_USERID
         const parts = customId.split('_');
-        const actionType = parts[0]; // src hoặc search
-        const sourceType = parts[1]; // yt, sc, both
+        const actionType = parts[0];
+        const sourceType = parts[1];
         const userId = parts[2];
         
-        // Lấy query từ cache
         const originalQuery = queryCache.get(`query_${userId}`);
         
         console.log(`🔍 Nút nhấn: action=${actionType}, source=${sourceType}, user=${userId}, query="${originalQuery}"`);
@@ -132,7 +130,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.editReply({ content: '❌ Phiên tìm kiếm đã hết hạn!', embeds: [], components: [] });
         }
         
-        // Tự xóa query cache sau 30 giây
         setTimeout(() => { queryCache.delete(`query_${userId}`); }, 30000);
         
         if (user.id !== userId) {
@@ -200,7 +197,6 @@ client.on('interactionCreate', async (interaction) => {
         return;
     }
     
-    // Nút điều khiển nhạc
     const serverQueue = queues.get(guildId);
     if (!serverQueue) return interaction.reply({ content: '❌ Không có nhạc!', ephemeral: true });
     if (!member.roles.cache.some(r => r.name === DJ_ROLE_NAME) && !member.permissions.has('ManageChannels')) {
@@ -267,7 +263,7 @@ client.on('messageCreate', async (message) => {
     } catch (e) { console.error(e); message.reply('❌ Lỗi!').catch(()=>{}); }
 });
 
-// ============ PLAY HANDLER (ĐÃ SỬA - KHÔNG awaitMessageComponent) ============
+// ============ PLAY HANDLER ============
 async function playHandler(message, query) {
     const vc = message.member?.voice?.channel;
     if (!vc) return message.reply('❌ Vào kênh thoại!');
@@ -276,7 +272,6 @@ async function playHandler(message, query) {
         const isSC = query.includes('soundcloud.com');
         const isYT = query.includes('youtube.com') || query.includes('youtu.be');
         
-        // Playlist
         if (query.includes('/sets/') || query.includes('playlist?list=')) {
             const msg = await message.reply('🔄 Tải playlist...');
             try {
@@ -291,7 +286,6 @@ async function playHandler(message, query) {
             return;
         }
         
-        // Link trực tiếp
         if (isSC || isYT) {
             const msg = await message.reply('🔄 Tải...');
             try {
@@ -305,7 +299,6 @@ async function playHandler(message, query) {
             return;
         }
         
-        // Tìm kiếm - KHÔNG awaitMessageComponent
         queryCache.set(`query_${message.author.id}`, query);
         
         const embed = new EmbedBuilder().setColor('#0099FF').setTitle(`🔍 Chọn nguồn: "${query}"`).setDescription('Chọn nền tảng:').setFooter({text:'30 giây'});
@@ -316,12 +309,10 @@ async function playHandler(message, query) {
         );
         
         await message.reply({ embeds: [embed], components: [row] });
-        // Nút được xử lý bởi interactionCreate
         
     } catch (e) { console.error(e); message.reply('❌ Lỗi!').catch(()=>{}); }
 }
 
-// ============ SEARCH HANDLER (ĐÃ SỬA - KHÔNG awaitMessageComponent) ============
 async function searchHandler(message, query) {
     queryCache.set(`query_${message.author.id}`, query);
     
@@ -333,10 +324,9 @@ async function searchHandler(message, query) {
     );
     
     await message.reply({ embeds: [embed], components: [row] });
-    // Nút được xử lý bởi interactionCreate
 }
 
-// ============ CÁC HANDLER CÒN LẠI (GIỮ NGUYÊN) ============
+// ============ CÁC HANDLER CÒN LẠI ============
 async function queueHandler(msg) { const q = queues.get(msg.guild.id); if (!q||!q.songs.length) return msg.reply('📭 Trống!'); msg.reply({embeds:[createQueueEmbed(q)]}); }
 async function npHandler(msg) { const q = queues.get(msg.guild.id); if (!q||!q.songs.length) return msg.reply('❌ Không có!'); msg.reply({embeds:[createNPEmbed(q)]}); }
 async function pauseHandler(msg) { const q = queues.get(msg.guild.id); if (!q?.player) return msg.reply('❌'); if (q.player.state.status==='paused') return msg.reply('⏸️ Rồi!'); q.player.pause(); msg.reply('⏸️ Tạm dừng!'); }
@@ -368,174 +358,204 @@ function createNPEmbed(q) { const s=q.songs[0]; if(!s) return new EmbedBuilder()
 async function joinAndPlay(src, vc) { const q=queues.get(src.guild?.id||src.guildId); if(!q) return; try{q.connection=joinVoiceChannel({channelId:vc.id,guildId:vc.guild.id,adapterCreator:vc.guild.voiceAdapterCreator,selfDeaf:true}); q.playing=true; q.connection.on(VoiceConnectionStatus.Ready,()=>playSong(q.connection.joinConfig.guildId)); q.connection.on(VoiceConnectionStatus.Disconnected,async()=>{try{await Promise.race([new Promise(r=>q.connection.on(VoiceConnectionStatus.Connecting,()=>r())),new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),5000))]);}catch(e){q.playing=false;q.connection?.destroy();queues.delete(q.connection.joinConfig.guildId);}}); if(q.connection.state.status===VoiceConnectionStatus.Ready) playSong(q.connection.joinConfig.guildId); }catch(e){console.error(e);q.playing=false;queues.delete(src.guild?.id||src.guildId);} }
 async function joinAndPlayFromInteraction(i, vc) { const q=queues.get(i.guildId); if(!q) return; try{q.connection=joinVoiceChannel({channelId:vc.id,guildId:vc.guild.id,adapterCreator:vc.guild.voiceAdapterCreator,selfDeaf:true}); q.playing=true; q.connection.on(VoiceConnectionStatus.Ready,()=>playSong(q.connection.joinConfig.guildId)); q.connection.on(VoiceConnectionStatus.Disconnected,async()=>{try{await Promise.race([new Promise(r=>q.connection.on(VoiceConnectionStatus.Connecting,()=>r())),new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),5000))]);}catch(e){q.playing=false;q.connection?.destroy();queues.delete(q.connection.joinConfig.guildId);}}); if(q.connection.state.status===VoiceConnectionStatus.Ready) playSong(q.connection.joinConfig.guildId); }catch(e){console.error(e);q.playing=false;queues.delete(i.guildId);} }
 
+// ============ HÀM PLAYSONG ĐÃ SỬA - KHÔNG NGỪNG ĐỘT NGỘT ============
 async function playSong(guildId) {
     const q = queues.get(guildId);
     if (!q?.connection || q.connection.state.status === VoiceConnectionStatus.Destroyed || q.connection.state.status === VoiceConnectionStatus.Disconnected) {
         if (q) { q.playing = false; queues.delete(guildId); }
         return;
     }
+    
     if (!q.songs.length) {
-        if (q.autoplay) { /* giữ nguyên autoplay */ }
+        if (q.autoplay) {
+            try {
+                const guildHistory = history.get(guildId) || [];
+                const lastSong = guildHistory[guildHistory.length - 1];
+                if (lastSong) {
+                    const related = await play.search(lastSong.name, { source: { youtube: "video" }, limit: 5 });
+                    if (related && related.length > 1) {
+                        const randomIndex = Math.floor(Math.random() * (related.length - 1)) + 1;
+                        q.songs.push(related[randomIndex]);
+                        q.textChannel?.send(`🔄 Autoplay: **${related[randomIndex].name || related[randomIndex].title}**`).catch(() => {});
+                    }
+                }
+            } catch (e) { console.error('❌ Autoplay error:', e.message); }
+        }
+        
         if (!q.songs.length) {
-            setTimeout(() => { if (q.connection && q.connection.state.status !== VoiceConnectionStatus.Destroyed && !q.songs.length) { q.playing = false; q.connection.destroy(); queues.delete(guildId); } }, 60000);
+            console.log('📭 Hết bài, đợi 60 giây...');
+            const timeout = setTimeout(() => {
+                if (q.connection && q.connection.state.status !== VoiceConnectionStatus.Destroyed && !q.songs.length) {
+                    console.log('👋 Rời voice');
+                    q.playing = false;
+                    q.connection.destroy();
+                    queues.delete(guildId);
+                }
+            }, 60000);
+            q._idleTimeout = timeout;
             return;
         }
     }
+    
+    // Hủy timeout cũ nếu có
+    if (q._idleTimeout) { clearTimeout(q._idleTimeout); q._idleTimeout = null; }
+    
     const song = q.songs[0];
+    
     try {
         let stream = null;
         let streamType = null;
+        const isSC = song.url?.includes('soundcloud');
 
-        console.log(`🎵 Đang thử stream: ${song.name || song.title} - ${song.url}`);
+        console.log(`🎵 Streaming: ${song.name || song.title}`);
 
-        try {
-            console.log('🎵 Cách 1: Stream trực tiếp');
-            const result = await play.stream(song.url);
-            if (result?.stream) {
-                stream = result.stream;
-                streamType = result.type;
-                console.log(`✅ Cách 1 thành công! Type: ${streamType}`);
-            }
-        } catch (e1) {
-            console.log(`❌ Cách 1 thất bại: ${e1.message}`);
-        }
-
-        if (!stream) {
+        if (!isSC) {
+            // === YOUTUBE: Dùng ytdl-core ===
             try {
-                console.log(`🔍 Cách 2: Tìm kiếm "${song.name || song.title}"`);
-                const searchSource = song.url?.includes('soundcloud') 
-                    ? { soundcloud: "tracks" } 
-                    : { youtube: "video" };
-                
-                const searchResults = await play.search(song.name || song.title, { 
-                    source: searchSource, 
-                    limit: 5 
+                console.log('📺 YouTube: ytdl-core');
+                const ytStream = ytdl(song.url, {
+                    quality: 'lowestaudio',
+                    filter: 'audioonly',
+                    highWaterMark: 1 << 25,
+                    dlChunkSize: 0
                 });
                 
-                if (searchResults && searchResults.length > 0) {
-                    for (const result of searchResults) {
-                        try {
-                            console.log(`🎵 Thử stream kết quả: ${result.name || result.title} - ${result.url}`);
-                            const streamResult = await play.stream(result.url);
-                            if (streamResult?.stream) {
-                                stream = streamResult.stream;
-                                streamType = streamResult.type;
-                                // Cập nhật song nếu dùng kết quả khác
-                                if (result.url !== song.url) {
-                                    q.songs[0] = result;
-                                    console.log(`✅ Đã thay thế bằng: ${result.name || result.title}`);
+                // Đợi stream sẵn sàng
+                await new Promise((resolve, reject) => {
+                    ytStream.once('readable', () => resolve());
+                    ytStream.once('error', (err) => reject(err));
+                    setTimeout(() => reject(new Error('ytdl timeout')), 10000);
+                });
+                
+                stream = ytStream;
+                streamType = 'opus';
+                console.log('✅ YouTube stream ready');
+            } catch (ytError) {
+                console.log(`❌ ytdl-core failed: ${ytError.message}`);
+                
+                // Fallback: play-dl
+                try {
+                    console.log('🔄 Fallback: play-dl');
+                    const result = await play.stream(song.url);
+                    if (result?.stream) {
+                        stream = result.stream;
+                        streamType = result.type;
+                        console.log('✅ play-dl fallback OK');
+                    }
+                } catch (pdError) {
+                    console.log(`❌ play-dl fallback failed: ${pdError.message}`);
+                }
+            }
+        } else {
+            // === SOUNDCLOUD: Dùng play-dl ===
+            try {
+                console.log('☁️ SoundCloud: play-dl');
+                const result = await play.stream(song.url);
+                if (result?.stream) {
+                    stream = result.stream;
+                    streamType = result.type;
+                    console.log('✅ SoundCloud stream ready');
+                }
+            } catch (scError) {
+                console.log(`❌ SoundCloud failed: ${scError.message}`);
+                
+                // Fallback: tìm kiếm lại
+                try {
+                    console.log('🔄 Tìm kiếm lại SoundCloud...');
+                    const results = await play.search(song.name || song.title, { source: { soundcloud: "tracks" }, limit: 3 });
+                    if (results?.length) {
+                        for (const r of results) {
+                            try {
+                                const result = await play.stream(r.url);
+                                if (result?.stream) {
+                                    stream = result.stream;
+                                    streamType = result.type;
+                                    console.log(`✅ SC fallback: ${r.name || r.title}`);
+                                    break;
                                 }
-                                console.log(`✅ Cách 2 thành công! Type: ${streamType}`);
-                                break;
-                            }
-                        } catch (e) {
-                            console.log(`❌ Thất bại với: ${result.name || result.title} - ${e.message}`);
-                            continue;
+                            } catch {}
                         }
                     }
+                } catch (searchError) {
+                    console.log(`❌ SC search fallback failed: ${searchError.message}`);
                 }
-            } catch (e2) {
-                console.log(`❌ Cách 2 thất bại: ${e2.message}`);
-            }
-        }
-
-        if (!stream && !song.url?.includes('soundcloud')) {
-            try {
-                console.log('🔍 Cách 3: Thử với video_info trước');
-                const videoInfo = await play.video_info(song.url).catch(() => null);
-                if (videoInfo?.url) {
-                    const result = await play.stream(videoInfo.url);
-                    if (result?.stream) {
-                        stream = result.stream;
-                        streamType = result.type;
-                        console.log(`✅ Cách 3 thành công! Type: ${streamType}`);
-                    }
-                }
-            } catch (e3) {
-                console.log(`❌ Cách 3 thất bại: ${e3.message}`);
-            }
-        }
-
-        if (!stream && song.url?.includes('soundcloud')) {
-            try {
-                console.log('🔍 Cách 4: Thử với soundcloud info');
-                const scInfo = await play.soundcloud(song.url).catch(() => null);
-                if (scInfo?.url) {
-                    const result = await play.stream(scInfo.url);
-                    if (result?.stream) {
-                        stream = result.stream;
-                        streamType = result.type;
-                        console.log(`✅ Cách 4 thành công! Type: ${streamType}`);
-                    }
-                }
-            } catch (e4) {
-                console.log(`❌ Cách 4 thất bại: ${e4.message}`);
             }
         }
 
         if (!stream) {
-            throw new Error('Không thể stream - thử !search để tìm bản khác');
+            throw new Error('Không thể stream - bỏ qua bài này');
         }
 
+        // Xác định input type
         let it;
         switch(streamType) {
             case 'opus': it = StreamType.Opus; break;
             case 'ogg': case 'ogg/opus': it = StreamType.OggOpus; break;
             case 'webm': case 'webm/opus': it = StreamType.WebmOpus; break;
             case 'raw': it = StreamType.Raw; break;
-            default: 
-                it = StreamType.OggOpus;
-                console.log(`⚠️ Stream type lạ (${streamType}), dùng OggOpus`);
+            default: it = StreamType.Opus;
         }
-
-        console.log(`🎵 Input type: ${it}`);
 
         q.resource = createAudioResource(stream, { inputType: it, inlineVolume: true });
         try { if (q.resource?.volume) q.resource.volume.setVolume(q.volume || 0.3); } catch {}
         
         if (!q.player) {
             q.player = createAudioPlayer();
-            q.player.on('error', (e) => { 
-                console.error('❌ Player error:', e); 
-                q.songs.shift(); 
-                setTimeout(() => playSong(guildId), 1000); 
-            });
-            q.player.on('stateChange', (o, n) => { 
-                if (n.status === AudioPlayerStatus.Idle && o.status !== AudioPlayerStatus.Idle) { 
-                    q.loop ? q.songs.push(q.songs.shift()) : q.songs.shift(); 
-                    setTimeout(() => playSong(guildId), 500); 
-                } 
-            });
             q.connection.subscribe(q.player);
         }
         
-        q.player.play(q.resource);
-        console.log('▶️ Đang phát:', song.name || song.title);
+        // XÓA listener cũ trước khi thêm mới
+        q.player.removeAllListeners('error');
+        q.player.removeAllListeners('stateChange');
         
-        const src = song.url?.includes('soundcloud') ? '☁️ SC' : '📺 YT';
-        q.textChannel?.send({ 
+        q.player.on('error', (e) => {
+            console.error('❌ Player error:', e.message);
+            q.songs.shift();
+            q.resource = null;
+            setTimeout(() => playSong(guildId), 1000);
+        });
+        
+        q.player.on('stateChange', (o, n) => {
+            if (n.status === AudioPlayerStatus.Idle && o.status !== AudioPlayerStatus.Idle) {
+                console.log('⏹️ Bài hát kết thúc');
+                if (q.loop) {
+                    const current = q.songs.shift();
+                    if (current) q.songs.push(current);
+                } else {
+                    q.songs.shift();
+                }
+                q.resource = null;
+                setTimeout(() => playSong(guildId), 500);
+            }
+            
+            if (n.status === AudioPlayerStatus.Playing) {
+                console.log('▶️ Đang phát');
+            }
+            
+            if (n.status === AudioPlayerStatus.Buffering) {
+                console.log('🔄 Đang buffer...');
+            }
+        });
+        
+        q.player.play(q.resource);
+        console.log('▶️ Phát:', song.name || song.title);
+        
+        const src = isSC ? '☁️ SC' : '📺 YT';
+        q.textChannel?.send({
             embeds: [new EmbedBuilder().setColor('#FF0000').setTitle('▶️ Đang phát')
                 .setDescription(`[${song.name||song.title}](${song.url})`)
                 .addFields(
                     {name:'👤',value:song.user?.name||song.channel?.name||'?',inline:true},
                     {name:'🔗',value:src,inline:true}
-                )] 
+                )]
         }).catch(()=>{});
         
         addToHistory(guildId, song);
         
     } catch (e) {
-        console.error('❌ Lỗi playSong:', e.message);
-        q.textChannel?.send({ 
-            embeds: [new EmbedBuilder().setColor('#FF0000').setTitle('❌ Lỗi phát nhạc')
-                .setDescription(`**${song.name||song.title}**`)
-                .addFields(
-                    {name:'📝 Lỗi',value:e.message},
-                    {name:'💡 Gợi ý',value:`Dùng \`.search ${(song.name||song.title||'').split(' ').slice(0,3).join(' ')}\` để tìm bản khác`}
-                )] 
-        }).catch(()=>{});
-        
-        q.songs.shift(); 
+        console.error('❌ playSong error:', e.message);
+        q.textChannel?.send(`❌ Bỏ qua: \`${song.name||song.title}\` - ${e.message}`).catch(()=>{});
+        q.songs.shift();
         q.resource = null;
         setTimeout(() => { if (q.songs.length) playSong(guildId); }, 2000);
     }
