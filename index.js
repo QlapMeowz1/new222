@@ -2,7 +2,6 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus, StreamType } = require('@discordjs/voice');
 const play = require('play-dl');
-const ytdl = require('ytdl-core');
 const fs = require('fs');
 const path = require('path');
 
@@ -33,7 +32,6 @@ const client = new Client({
 const queues = new Map();
 const history = new Map();
 const searchCache = new Map();
-const queryCache = new Map();
 
 const filters = {
     'bassboost': 'bass=g=10', 'nightcore': 'atempo=1.3,asetrate=48000*1.25',
@@ -74,14 +72,14 @@ client.on('interactionCreate', async (interaction) => {
         const { customId, guildId, user, values } = interaction;
         const cachedResults = searchCache.get(`results_${user.id}`);
         
-        if (customId.startsWith('select_song_') || customId.startsWith('search_select_')) {
+        if (customId.startsWith('select_song_')) {
             if (!cachedResults) {
                 return interaction.reply({ content: '❌ Phiên tìm kiếm đã hết hạn!', ephemeral: true });
             }
             
             await interaction.deferUpdate();
             
-            const selectedIndex = parseInt(values[0].replace('track_', '').replace('search_track_', ''));
+            const selectedIndex = parseInt(values[0].replace('track_', ''));
             const songInfo = cachedResults[selectedIndex];
             
             const vc = interaction.member?.voice?.channel;
@@ -91,14 +89,12 @@ client.on('interactionCreate', async (interaction) => {
             serverQueue.songs.push(songInfo);
             addToHistory(guildId, songInfo);
             
-            const source = songInfo.url?.includes('soundcloud') ? '☁️ SoundCloud' : '📺 YouTube';
             const embed = new EmbedBuilder().setColor('#00FF00').setTitle('✅ Đã thêm vào hàng đợi')
-                .setDescription(`[${songInfo.name || songInfo.title}](${songInfo.url})`)
+                .setDescription(`[${songInfo.name}](${songInfo.url})`)
                 .addFields(
-                    { name: '👤 Nghệ sĩ', value: songInfo.user?.name || songInfo.channel?.name || 'Unknown', inline: true },
+                    { name: '👤 Nghệ sĩ', value: songInfo.user?.name || 'Unknown', inline: true },
                     { name: '⏱️', value: songInfo.durationRaw || 'N/A', inline: true },
-                    { name: '📊 Vị trí', value: `#${serverQueue.songs.length}`, inline: true },
-                    { name: '🔗 Nguồn', value: source, inline: true }
+                    { name: '📊 Vị trí', value: `#${serverQueue.songs.length}`, inline: true }
                 );
             
             await interaction.editReply({ embeds: [embed], components: [] });
@@ -110,92 +106,7 @@ client.on('interactionCreate', async (interaction) => {
     
     if (!interaction.isButton()) return;
     
-    const { customId, guildId, member, user } = interaction;
-    
-    if (customId.startsWith('src_yt_') || customId.startsWith('src_sc_') || customId.startsWith('src_both_') ||
-        customId.startsWith('search_yt_') || customId.startsWith('search_sc_') || customId.startsWith('search_both_')) {
-        
-        await interaction.deferUpdate();
-        
-        const parts = customId.split('_');
-        const actionType = parts[0];
-        const sourceType = parts[1];
-        const userId = parts[2];
-        
-        const originalQuery = queryCache.get(`query_${userId}`);
-        
-        console.log(`🔍 Nút nhấn: action=${actionType}, source=${sourceType}, user=${userId}, query="${originalQuery}"`);
-        
-        if (!originalQuery) {
-            return interaction.editReply({ content: '❌ Phiên tìm kiếm đã hết hạn!', embeds: [], components: [] });
-        }
-        
-        setTimeout(() => { queryCache.delete(`query_${userId}`); }, 30000);
-        
-        if (user.id !== userId) {
-            return interaction.followUp({ content: '❌ Bạn không phải người dùng lệnh này!', ephemeral: true });
-        }
-        
-        try {
-            let searchResults = [];
-            let sourceName = '';
-            
-            if (sourceType === 'yt') {
-                searchResults = await play.search(originalQuery, { source: { youtube: "video" }, limit: 10 });
-                sourceName = '📺 YouTube';
-            } else if (sourceType === 'sc') {
-                searchResults = await play.search(originalQuery, { source: { soundcloud: "tracks" }, limit: 10 });
-                sourceName = '☁️ SoundCloud';
-            } else {
-                const [yt, sc] = await Promise.all([
-                    play.search(originalQuery, { source: { youtube: "video" }, limit: 5 }),
-                    play.search(originalQuery, { source: { soundcloud: "tracks" }, limit: 5 })
-                ]);
-                searchResults = [...(yt || []), ...(sc || [])];
-                sourceName = '🎶 YouTube + SoundCloud';
-            }
-            
-            console.log(`✅ Tìm thấy ${searchResults.length} kết quả cho "${originalQuery}"`);
-            
-            if (!searchResults || searchResults.length === 0) {
-                return interaction.editReply({ content: `❌ Không tìm thấy "${originalQuery}" trên ${sourceName}!`, embeds: [], components: [] });
-            }
-            
-            searchCache.set(`results_${user.id}`, searchResults);
-            
-            const selectId = actionType === 'search' ? `select_song_${user.id}` : `search_select_${user.id}`;
-            
-            const menu = new StringSelectMenuBuilder()
-                .setCustomId(selectId)
-                .setPlaceholder(`🎵 Chọn bài (${sourceName})...`)
-                .addOptions(searchResults.slice(0, 10).map((t, i) => ({
-                    label: (t.name || t.title || 'Unknown').substring(0, 100),
-                    description: `👤 ${t.user?.name || t.channel?.name || '?'} | ⏱️ ${t.durationRaw || 'N/A'}`.substring(0, 100),
-                    value: `track_${i}`, emoji: i === 0 ? '🎵' : '🎶'
-                })));
-            
-            const row = new ActionRowBuilder().addComponents(menu);
-            
-            const embed = new EmbedBuilder().setColor('#FF7700')
-                .setTitle(`🔍 Kết quả: "${originalQuery}" (${sourceName})`)
-                .setDescription('👇 Chọn bài bên dưới (60 giây)')
-                .setFooter({ text: `${searchResults.length} kết quả` });
-            
-            searchResults.slice(0, 10).forEach((t, i) => {
-                const src = t.url?.includes('soundcloud') ? '☁️' : '📺';
-                embed.addFields({ name: `${i+1}. ${t.name || t.title || '?'}`, value: `${src} | 👤 ${t.user?.name || t.channel?.name || '?'} | ⏱️ ${t.durationRaw || 'N/A'}`, inline: false });
-            });
-            
-            await interaction.editReply({ embeds: [embed], components: [row] });
-            
-            setTimeout(() => { searchCache.delete(`results_${user.id}`); }, 60000);
-            
-        } catch (error) {
-            console.error('❌ Lỗi tìm kiếm:', error);
-            await interaction.editReply({ content: '❌ Lỗi: ' + error.message, embeds: [], components: [] }).catch(() => {});
-        }
-        return;
-    }
+    const { customId, guildId, member } = interaction;
     
     const serverQueue = queues.get(guildId);
     if (!serverQueue) return interaction.reply({ content: '❌ Không có nhạc!', ephemeral: true });
@@ -270,60 +181,106 @@ async function playHandler(message, query) {
     
     try {
         const isSC = query.includes('soundcloud.com');
-        const isYT = query.includes('youtube.com') || query.includes('youtu.be');
         
-        if (query.includes('/sets/') || query.includes('playlist?list=')) {
+        // Playlist SoundCloud
+        if (query.includes('/sets/')) {
             const msg = await message.reply('🔄 Tải playlist...');
             try {
-                let tracks = [], name = '', src = '';
-                if (isSC) { const pl = await play.soundcloud(query); tracks = await pl.all_tracks(); name = pl.name; src = '☁️ SC'; }
-                else { const pl = await play.playlist_info(query); tracks = await pl.all_tracks(); name = pl.title; src = '📺 YT'; }
+                const pl = await play.soundcloud(query);
+                const tracks = await pl.all_tracks();
                 const sq = getOrCreateQueue(message);
                 tracks.forEach(t => sq.songs.push(t));
-                await msg.edit({ content: null, embeds: [new EmbedBuilder().setColor('#00FF00').setTitle(`📋 ${name}`).addFields({name:'📊',value:`${tracks.length} bài`,inline:true},{name:'🔗',value:src,inline:true})] });
+                await msg.edit({ content: null, embeds: [new EmbedBuilder().setColor('#00FF00').setTitle(`📋 ${pl.name}`).addFields({name:'📊',value:`${tracks.length} bài`,inline:true})] });
                 if (!sq.playing) await joinAndPlay(message, vc);
             } catch (e) { await msg.edit('❌ Lỗi tải playlist!'); }
             return;
         }
         
-        if (isSC || isYT) {
+        // Link SoundCloud trực tiếp
+        if (isSC) {
             const msg = await message.reply('🔄 Tải...');
             try {
-                const info = isSC ? await play.soundcloud(query) : await play.video_info(query);
+                const info = await play.soundcloud(query);
                 const sq = getOrCreateQueue(message);
                 sq.songs.push(info);
                 addToHistory(message.guild.id, info);
-                await msg.edit({ content: null, embeds: [new EmbedBuilder().setColor('#00FF00').setTitle('✅ Đã thêm').setDescription(`[${info.name||info.title}](${info.url})`).addFields({name:'👤',value:info.user?.name||info.channel?.name||'?',inline:true},{name:'⏱️',value:info.durationRaw||'N/A',inline:true})] });
+                await msg.edit({ content: null, embeds: [new EmbedBuilder().setColor('#00FF00').setTitle('✅ Đã thêm').setDescription(`[${info.name}](${info.url})`).addFields({name:'👤',value:info.user?.name||'?',inline:true},{name:'⏱️',value:info.durationRaw||'N/A',inline:true})] });
                 if (!sq.playing) await joinAndPlay(message, vc);
             } catch (e) { await msg.edit('❌ Lỗi!'); }
             return;
         }
         
-        queryCache.set(`query_${message.author.id}`, query);
+        // Tìm kiếm SoundCloud
+        const searchResults = await play.search(query, { source: { soundcloud: "tracks" }, limit: 10 });
         
-        const embed = new EmbedBuilder().setColor('#0099FF').setTitle(`🔍 Chọn nguồn: "${query}"`).setDescription('Chọn nền tảng:').setFooter({text:'30 giây'});
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(`search_yt_${message.author.id}`).setLabel('YouTube').setStyle(ButtonStyle.Danger).setEmoji('📺'),
-            new ButtonBuilder().setCustomId(`search_sc_${message.author.id}`).setLabel('SoundCloud').setStyle(ButtonStyle.Primary).setEmoji('☁️'),
-            new ButtonBuilder().setCustomId(`search_both_${message.author.id}`).setLabel('Cả hai').setStyle(ButtonStyle.Success).setEmoji('🎶')
-        );
+        if (!searchResults || searchResults.length === 0) {
+            return message.reply('❌ Không tìm thấy bài hát nào!');
+        }
+        
+        searchCache.set(`results_${message.author.id}`, searchResults);
+        
+        const menu = new StringSelectMenuBuilder()
+            .setCustomId(`select_song_${message.author.id}`)
+            .setPlaceholder('🎵 Chọn bài hát...')
+            .addOptions(searchResults.slice(0, 10).map((t, i) => ({
+                label: (t.name || 'Unknown').substring(0, 100),
+                description: `👤 ${t.user?.name || '?'} | ⏱️ ${t.durationRaw || 'N/A'}`.substring(0, 100),
+                value: `track_${i}`, emoji: i === 0 ? '🎵' : '🎶'
+            })));
+        
+        const row = new ActionRowBuilder().addComponents(menu);
+        
+        const embed = new EmbedBuilder().setColor('#FF7700')
+            .setTitle(`🔍 Kết quả: "${query}"`)
+            .setDescription('👇 Chọn bài bên dưới (60 giây)')
+            .setFooter({ text: `${searchResults.length} kết quả` });
+        
+        searchResults.slice(0, 10).forEach((t, i) => {
+            embed.addFields({ name: `${i+1}. ${t.name || '?'}`, value: `👤 ${t.user?.name || '?'} | ⏱️ ${t.durationRaw || 'N/A'}`, inline: false });
+        });
         
         await message.reply({ embeds: [embed], components: [row] });
+        
+        setTimeout(() => { searchCache.delete(`results_${message.author.id}`); }, 60000);
         
     } catch (e) { console.error(e); message.reply('❌ Lỗi!').catch(()=>{}); }
 }
 
 async function searchHandler(message, query) {
-    queryCache.set(`query_${message.author.id}`, query);
-    
-    const embed = new EmbedBuilder().setColor('#0099FF').setTitle(`🔍 Chọn nguồn: "${query}"`).setFooter({text:'30 giây'});
-    const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`src_yt_${message.author.id}`).setLabel('YouTube').setStyle(ButtonStyle.Danger).setEmoji('📺'),
-        new ButtonBuilder().setCustomId(`src_sc_${message.author.id}`).setLabel('SoundCloud').setStyle(ButtonStyle.Primary).setEmoji('☁️'),
-        new ButtonBuilder().setCustomId(`src_both_${message.author.id}`).setLabel('Cả hai').setStyle(ButtonStyle.Success).setEmoji('🎶')
-    );
-    
-    await message.reply({ embeds: [embed], components: [row] });
+    try {
+        const searchResults = await play.search(query, { source: { soundcloud: "tracks" }, limit: 10 });
+        
+        if (!searchResults || searchResults.length === 0) {
+            return message.reply('❌ Không tìm thấy bài hát nào!');
+        }
+        
+        searchCache.set(`results_${message.author.id}`, searchResults);
+        
+        const menu = new StringSelectMenuBuilder()
+            .setCustomId(`select_song_${message.author.id}`)
+            .setPlaceholder('🎵 Chọn bài hát...')
+            .addOptions(searchResults.slice(0, 10).map((t, i) => ({
+                label: (t.name || 'Unknown').substring(0, 100),
+                description: `👤 ${t.user?.name || '?'} | ⏱️ ${t.durationRaw || 'N/A'}`.substring(0, 100),
+                value: `track_${i}`, emoji: i === 0 ? '🎵' : '🎶'
+            })));
+        
+        const row = new ActionRowBuilder().addComponents(menu);
+        
+        const embed = new EmbedBuilder().setColor('#FF7700')
+            .setTitle(`🔍 Kết quả: "${query}"`)
+            .setDescription('👇 Chọn bài bên dưới (60 giây)')
+            .setFooter({ text: `${searchResults.length} kết quả` });
+        
+        searchResults.slice(0, 10).forEach((t, i) => {
+            embed.addFields({ name: `${i+1}. ${t.name || '?'}`, value: `👤 ${t.user?.name || '?'} | ⏱️ ${t.durationRaw || 'N/A'}`, inline: false });
+        });
+        
+        await message.reply({ embeds: [embed], components: [row] });
+        
+        setTimeout(() => { searchCache.delete(`results_${message.author.id}`); }, 60000);
+        
+    } catch (e) { console.error(e); message.reply('❌ Lỗi!').catch(()=>{}); }
 }
 
 // ============ CÁC HANDLER CÒN LẠI ============
@@ -331,169 +288,109 @@ async function queueHandler(msg) { const q = queues.get(msg.guild.id); if (!q||!
 async function npHandler(msg) { const q = queues.get(msg.guild.id); if (!q||!q.songs.length) return msg.reply('❌ Không có!'); msg.reply({embeds:[createNPEmbed(q)]}); }
 async function pauseHandler(msg) { const q = queues.get(msg.guild.id); if (!q?.player) return msg.reply('❌'); if (q.player.state.status==='paused') return msg.reply('⏸️ Rồi!'); q.player.pause(); msg.reply('⏸️ Tạm dừng!'); }
 async function resumeHandler(msg) { const q = queues.get(msg.guild.id); if (!q?.player) return msg.reply('❌'); if (q.player.state.status!=='paused') return msg.reply('▶️ Rồi!'); q.player.unpause(); msg.reply('▶️ Tiếp tục!'); }
-async function skipHandler(msg) { const q = queues.get(msg.guild.id); if (!q?.player) return msg.reply('❌'); const s = q.songs[0]; q.player.stop(); msg.reply({embeds:[new EmbedBuilder().setColor('#FFA500').setTitle('⏭️ Skip').setDescription(`[${s.name||s.title}](${s.url})`)]}); }
-async function removeHandler(msg, idx) { const q = queues.get(msg.guild.id); if (!q||!q.songs.length) return msg.reply('❌'); const i = parseInt(idx); if (isNaN(i)||i<1||i>=q.songs.length) return msg.reply(`❌ 1-${q.songs.length-1}!`); const r = q.songs.splice(i,1)[0]; msg.reply(`🗑️ ${r.name||r.title}`); }
+async function skipHandler(msg) { const q = queues.get(msg.guild.id); if (!q?.player) return msg.reply('❌'); const s = q.songs[0]; q.player.stop(); msg.reply({embeds:[new EmbedBuilder().setColor('#FFA500').setTitle('⏭️ Skip').setDescription(`[${s.name}](${s.url})`)]}); }
+async function removeHandler(msg, idx) { const q = queues.get(msg.guild.id); if (!q||!q.songs.length) return msg.reply('❌'); const i = parseInt(idx); if (isNaN(i)||i<1||i>=q.songs.length) return msg.reply(`❌ 1-${q.songs.length-1}!`); const r = q.songs.splice(i,1)[0]; msg.reply(`🗑️ ${r.name}`); }
 async function shuffleHandler(msg) { const q = queues.get(msg.guild.id); if (!q||q.songs.length<2) return msg.reply('❌'); const c = q.songs.shift(); for (let i=q.songs.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[q.songs[i],q.songs[j]]=[q.songs[j],q.songs[i]];} q.songs.unshift(c); msg.reply('🔀 Trộn!'); }
 async function loopHandler(msg) { const q = queues.get(msg.guild.id); if (!q) return msg.reply('❌'); q.loop=!q.loop; msg.reply({embeds:[new EmbedBuilder().setColor(q.loop?'#00FF00':'#FF0000').setTitle(`🔁 Loop: ${q.loop?'BẬT':'TẮT'}`)]}); }
 async function volumeHandler(msg, v) { const q = queues.get(msg.guild.id); if (!q?.player) return msg.reply('❌'); const vol=parseInt(v); if(isNaN(vol)||vol<0||vol>200) return msg.reply('❌ 0-200!'); q.volume=vol/100; try{if(q.resource?.volume)q.resource.volume.setVolume(q.volume);}catch(e){} const fb=Math.max(0,Math.floor(vol/10)), eb=Math.max(0,20-fb); msg.reply({embeds:[new EmbedBuilder().setColor('#0099FF').setTitle('🔊 Âm lượng').setDescription(`${'█'.repeat(fb)}${'░'.repeat(eb)}`).addFields({name:'Giá trị',value:`${vol}%`,inline:true})]}); }
 async function stopHandler(msg) { const q = queues.get(msg.guild.id); if (!q?.connection) return msg.reply('❌'); q.songs=[]; q.player?.stop(); q.connection.destroy(); queues.delete(msg.guild.id); msg.reply('⏹️ Dừng!'); }
 async function filterHandler(msg, args) { const q = queues.get(msg.guild.id); if (!q?.player) return msg.reply('❌'); if(!args.length) return msg.reply(`🎛️ Filters: ${Object.keys(filters).join(', ')}`); const fn=args[0].toLowerCase(); if(!filters[fn]&&fn!=='normal') return msg.reply('❌ Không tồn tại!'); q.filter=fn; msg.reply({embeds:[new EmbedBuilder().setColor('#FF00FF').setTitle('🎨 Filter').setDescription(`**${fn}**`)]}); }
-async function saveQueueHandler(msg, name) { if(!name) return msg.reply('❌ Tên?'); const q=queues.get(msg.guild.id); if(!q||!q.songs.length) return msg.reply('❌'); const data={name,songs:q.songs.map(s=>({name:s.name||s.title,url:s.url,user:s.user?.name||s.channel?.name,duration:s.durationRaw})),filter:q.filter,volume:q.volume,loop:q.loop,savedBy:msg.author.tag,savedAt:new Date().toISOString()}; const fp=path.join(DATA_PATH,`queue_${msg.guild.id}_${name.replace(/[^a-zA-Z0-9_-]/g,'_')}.json`); fs.writeFileSync(fp,JSON.stringify(data,null,2)); msg.reply({embeds:[new EmbedBuilder().setColor('#00FF00').setTitle('💾 Đã lưu!').addFields({name:'📝',value:name,inline:true},{name:'📊',value:`${q.songs.length} bài`,inline:true})]}); }
-async function loadQueueHandler(msg, name) { if(!name) return msg.reply('❌ Tên?'); const fp=path.join(DATA_PATH,`queue_${msg.guild.id}_${name.replace(/[^a-zA-Z0-9_-]/g,'_')}.json`); if(!fs.existsSync(fp)) return msg.reply('❌ Không tìm thấy!'); const data=JSON.parse(fs.readFileSync(fp,'utf8')); const q=getOrCreateQueue(msg); for(const s of data.songs){try{const i=s.url?.includes('soundcloud')?await play.soundcloud(s.url):await play.video_info(s.url);q.songs.push(i);}catch(e){}} q.filter=data.filter||'normal'; q.volume=data.volume||0.3; q.loop=data.loop||false; msg.reply({embeds:[new EmbedBuilder().setColor('#00FF00').setTitle('📂 Đã tải!').addFields({name:'📝',value:name,inline:true},{name:'📊',value:`${q.songs.length} bài`,inline:true})]}); if(!q.playing){const vc=msg.member?.voice?.channel; if(vc) await joinAndPlay(msg,vc);} }
+async function saveQueueHandler(msg, name) { if(!name) return msg.reply('❌ Tên?'); const q=queues.get(msg.guild.id); if(!q||!q.songs.length) return msg.reply('❌'); const data={name,songs:q.songs.map(s=>({name:s.name,url:s.url,user:s.user?.name,duration:s.durationRaw})),filter:q.filter,volume:q.volume,loop:q.loop,savedBy:msg.author.tag,savedAt:new Date().toISOString()}; const fp=path.join(DATA_PATH,`queue_${msg.guild.id}_${name.replace(/[^a-zA-Z0-9_-]/g,'_')}.json`); fs.writeFileSync(fp,JSON.stringify(data,null,2)); msg.reply({embeds:[new EmbedBuilder().setColor('#00FF00').setTitle('💾 Đã lưu!').addFields({name:'📝',value:name,inline:true},{name:'📊',value:`${q.songs.length} bài`,inline:true})]}); }
+async function loadQueueHandler(msg, name) { if(!name) return msg.reply('❌ Tên?'); const fp=path.join(DATA_PATH,`queue_${msg.guild.id}_${name.replace(/[^a-zA-Z0-9_-]/g,'_')}.json`); if(!fs.existsSync(fp)) return msg.reply('❌ Không tìm thấy!'); const data=JSON.parse(fs.readFileSync(fp,'utf8')); const q=getOrCreateQueue(msg); for(const s of data.songs){try{const i=await play.soundcloud(s.url);q.songs.push(i);}catch(e){}} q.filter=data.filter||'normal'; q.volume=data.volume||0.3; q.loop=data.loop||false; msg.reply({embeds:[new EmbedBuilder().setColor('#00FF00').setTitle('📂 Đã tải!').addFields({name:'📝',value:name,inline:true},{name:'📊',value:`${q.songs.length} bài`,inline:true})]}); if(!q.playing){const vc=msg.member?.voice?.channel; if(vc) await joinAndPlay(msg,vc);} }
 async function listSavedHandler(msg) { const files=fs.readdirSync(DATA_PATH).filter(f=>f.startsWith(`queue_${msg.guild.id}_`)).map(f=>f.replace(`queue_${msg.guild.id}_`,'').replace('.json','')); if(!files.length) return msg.reply('📭'); msg.reply({embeds:[new EmbedBuilder().setColor('#0099FF').setTitle('💾 Đã lưu').setDescription(files.map((f,i)=>`**${i+1}.** ${f}`).join('\n'))]}); }
 async function historyHandler(msg) { const h=history.get(msg.guild.id)||[]; if(!h.length) return msg.reply('📜 Trống!'); msg.reply({embeds:[new EmbedBuilder().setColor('#FFA500').setTitle('📜 Lịch sử').setDescription(h.slice(-20).reverse().map((s,i)=>`**${i+1}.** [${s.name}](${s.url})`).join('\n'))]}); }
 async function autoplayHandler(msg) { const q=queues.get(msg.guild.id); if(!q) return msg.reply('❌'); q.autoplay=!q.autoplay; msg.reply({embeds:[new EmbedBuilder().setColor(q.autoplay?'#00FF00':'#FF0000').setTitle(`🔄 Autoplay: ${q.autoplay?'BẬT':'TẮT'}`)]}); }
-async function panelHandler(msg) { const q=queues.get(msg.guild.id); const r1=new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('pause_btn').setLabel('⏸️').setStyle(ButtonStyle.Primary),new ButtonBuilder().setCustomId('resume_btn').setLabel('▶️').setStyle(ButtonStyle.Success),new ButtonBuilder().setCustomId('skip_btn').setLabel('⏭️').setStyle(ButtonStyle.Secondary),new ButtonBuilder().setCustomId('stop_btn').setLabel('⏹️').setStyle(ButtonStyle.Danger)); const r2=new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('loop_btn').setLabel('🔁').setStyle(ButtonStyle.Primary),new ButtonBuilder().setCustomId('shuffle_btn').setLabel('🔀').setStyle(ButtonStyle.Success),new ButtonBuilder().setCustomId('queue_btn').setLabel('📋').setStyle(ButtonStyle.Secondary),new ButtonBuilder().setCustomId('np_btn').setLabel('🎵').setStyle(ButtonStyle.Secondary)); const e=new EmbedBuilder().setColor('#FF0000').setTitle('🎛️ Panel'); if(q&&q.songs.length) e.addFields({name:'🎵',value:q.songs[0].name||q.songs[0].title||'?'}); msg.channel.send({embeds:[e],components:[r1,r2]}); }
-async function statsHandler(msg) { const q=queues.get(msg.guild.id); const h=history.get(msg.guild.id)||[]; msg.reply({embeds:[new EmbedBuilder().setColor('#FF0000').setTitle('📊 Stats').addFields({name:'🎵',value:q?.songs[0]?.name||q?.songs[0]?.title||'Không có',inline:false},{name:'📋',value:`${q?.songs.length||0} bài`,inline:true},{name:'🔁',value:q?.loop?'Bật':'Tắt',inline:true},{name:'🔄',value:q?.autoplay?'Bật':'Tắt',inline:true},{name:'🔊',value:`${(q?.volume||0.3)*100}%`,inline:true},{name:'📜',value:`${h.length} bài`,inline:true},{name:'⏱️',value:formatUptime(process.uptime()),inline:true})]}); }
-async function helpHandler(msg) { msg.reply({embeds:[new EmbedBuilder().setColor('#FF0000').setTitle('🎵 MUSIC BOT - HƯỚNG DẪN').setDescription(`Prefix: \`${PREFIX}\` | YT + SC`).addFields({name:'📌 Phát nhạc',value:`\`${PREFIX}play <tên/link>\` - Phát\n\`${PREFIX}search <từ khóa>\` - Tìm`},{name:'🎛️ Điều khiển',value:`\`${PREFIX}pause/resume/skip/stop\`\n\`${PREFIX}loop/shuffle/volume\``},{name:'💾 Lưu trữ',value:`\`${PREFIX}save/load/saved\``}).setFooter({text:'YT + SoundCloud'})]}); }
+async function panelHandler(msg) { const q=queues.get(msg.guild.id); const r1=new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('pause_btn').setLabel('⏸️').setStyle(ButtonStyle.Primary),new ButtonBuilder().setCustomId('resume_btn').setLabel('▶️').setStyle(ButtonStyle.Success),new ButtonBuilder().setCustomId('skip_btn').setLabel('⏭️').setStyle(ButtonStyle.Secondary),new ButtonBuilder().setCustomId('stop_btn').setLabel('⏹️').setStyle(ButtonStyle.Danger)); const r2=new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('loop_btn').setLabel('🔁').setStyle(ButtonStyle.Primary),new ButtonBuilder().setCustomId('shuffle_btn').setLabel('🔀').setStyle(ButtonStyle.Success),new ButtonBuilder().setCustomId('queue_btn').setLabel('📋').setStyle(ButtonStyle.Secondary),new ButtonBuilder().setCustomId('np_btn').setLabel('🎵').setStyle(ButtonStyle.Secondary)); const e=new EmbedBuilder().setColor('#FF0000').setTitle('🎛️ Panel'); if(q&&q.songs.length) e.addFields({name:'🎵',value:q.songs[0].name||'?'}); msg.channel.send({embeds:[e],components:[r1,r2]}); }
+async function statsHandler(msg) { const q=queues.get(msg.guild.id); const h=history.get(msg.guild.id)||[]; msg.reply({embeds:[new EmbedBuilder().setColor('#FF0000').setTitle('📊 Stats').addFields({name:'🎵',value:q?.songs[0]?.name||'Không có',inline:false},{name:'📋',value:`${q?.songs.length||0} bài`,inline:true},{name:'🔁',value:q?.loop?'Bật':'Tắt',inline:true},{name:'🔄',value:q?.autoplay?'Bật':'Tắt',inline:true},{name:'🔊',value:`${(q?.volume||0.3)*100}%`,inline:true},{name:'📜',value:`${h.length} bài`,inline:true},{name:'⏱️',value:formatUptime(process.uptime()),inline:true})]}); }
+async function helpHandler(msg) { msg.reply({embeds:[new EmbedBuilder().setColor('#FF0000').setTitle('🎵 MUSIC BOT - HƯỚNG DẪN').setDescription(`Prefix: \`${PREFIX}\` | ☁️ SoundCloud`).addFields({name:'📌 Phát nhạc',value:`\`${PREFIX}play <tên/link>\` - Phát\n\`${PREFIX}search <từ khóa>\` - Tìm`},{name:'🎛️ Điều khiển',value:`\`${PREFIX}pause/resume/skip/stop\`\n\`${PREFIX}loop/shuffle/volume\``},{name:'💾 Lưu trữ',value:`\`${PREFIX}save/load/saved\``}).setFooter({text:'Powered by SoundCloud'})]}); }
 
 // ============ HELPER FUNCTIONS ============
 function hasDJPermission(msg) { return msg.member.permissions.has('ManageChannels') || msg.member.roles.cache.some(r=>r.name===DJ_ROLE_NAME); }
 function getOrCreateQueue(msg) { if(!queues.has(msg.guild.id)) queues.set(msg.guild.id,{textChannel:msg.channel,voiceChannel:msg.member.voice.channel,connection:null,player:null,resource:null,songs:[],volume:0.3,loop:false,autoplay:false,filter:'normal',playing:false}); return queues.get(msg.guild.id); }
 function getOrCreateQueueFromInteraction(i) { if(!queues.has(i.guildId)) queues.set(i.guildId,{textChannel:i.channel,voiceChannel:i.member.voice.channel,connection:null,player:null,resource:null,songs:[],volume:0.3,loop:false,autoplay:false,filter:'normal',playing:false}); return queues.get(i.guildId); }
-function addToHistory(gid,song) { if(!history.has(gid)) history.set(gid,[]); const h=history.get(gid); h.push({name:song.name||song.title,url:song.url,user:song.user?.name||song.channel?.name,duration:song.durationRaw,playedAt:new Date().toISOString()}); if(h.length>100) h.shift(); }
-function createQueueEmbed(q) { const list=q.songs.map((s,i)=>{const p=i===0?'▶️ ':`${i}. `;const src=s.url?.includes('soundcloud')?'☁️':'📺';return `${p}${src} [${s.name||s.title||'?'}](${s.url}) | \`${s.durationRaw||'N/A'}\``;}).join('\n').substring(0,4000)||'Trống'; return new EmbedBuilder().setColor('#0099FF').setTitle('📋 Queue').setDescription(list).addFields({name:'📊',value:`${q.songs.length}`,inline:true},{name:'🔁',value:q.loop?'Bật':'Tắt',inline:true}); }
-function createNPEmbed(q) { const s=q.songs[0]; if(!s) return new EmbedBuilder().setColor('#FF0000').setTitle('❌ Không có'); const src=s.url?.includes('soundcloud')?'☁️ SC':'📺 YT'; return new EmbedBuilder().setColor('#FF0000').setTitle('🎵 Đang phát').setDescription(`[${s.name||s.title||'?'}](${s.url})`).addFields({name:'👤',value:s.user?.name||s.channel?.name||'?',inline:true},{name:'⏱️',value:s.durationRaw||'N/A',inline:true},{name:'🔗',value:src,inline:true},{name:'🔊',value:`${(q.volume||0.3)*100}%`,inline:true}).setThumbnail(s.thumbnail?.url||null); }
+function addToHistory(gid,song) { if(!history.has(gid)) history.set(gid,[]); const h=history.get(gid); h.push({name:song.name,url:song.url,user:song.user?.name,duration:song.durationRaw,playedAt:new Date().toISOString()}); if(h.length>100) h.shift(); }
+function createQueueEmbed(q) { const list=q.songs.map((s,i)=>{const p=i===0?'▶️ ':`${i}. `;return `${p}[${s.name||'?'}](${s.url}) | \`${s.durationRaw||'N/A'}\``;}).join('\n').substring(0,4000)||'Trống'; return new EmbedBuilder().setColor('#0099FF').setTitle('📋 Queue').setDescription(list).addFields({name:'📊',value:`${q.songs.length}`,inline:true},{name:'🔁',value:q.loop?'Bật':'Tắt',inline:true}); }
+function createNPEmbed(q) { const s=q.songs[0]; if(!s) return new EmbedBuilder().setColor('#FF0000').setTitle('❌ Không có'); return new EmbedBuilder().setColor('#FF0000').setTitle('🎵 Đang phát').setDescription(`[${s.name||'?'}](${s.url})`).addFields({name:'👤',value:s.user?.name||'?',inline:true},{name:'⏱️',value:s.durationRaw||'N/A',inline:true},{name:'🔊',value:`${(q.volume||0.3)*100}%`,inline:true}).setThumbnail(s.thumbnail?.url||null); }
 
 async function joinAndPlay(src, vc) { const q=queues.get(src.guild?.id||src.guildId); if(!q) return; try{q.connection=joinVoiceChannel({channelId:vc.id,guildId:vc.guild.id,adapterCreator:vc.guild.voiceAdapterCreator,selfDeaf:true}); q.playing=true; q.connection.on(VoiceConnectionStatus.Ready,()=>playSong(q.connection.joinConfig.guildId)); q.connection.on(VoiceConnectionStatus.Disconnected,async()=>{try{await Promise.race([new Promise(r=>q.connection.on(VoiceConnectionStatus.Connecting,()=>r())),new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),5000))]);}catch(e){q.playing=false;q.connection?.destroy();queues.delete(q.connection.joinConfig.guildId);}}); if(q.connection.state.status===VoiceConnectionStatus.Ready) playSong(q.connection.joinConfig.guildId); }catch(e){console.error(e);q.playing=false;queues.delete(src.guild?.id||src.guildId);} }
 async function joinAndPlayFromInteraction(i, vc) { const q=queues.get(i.guildId); if(!q) return; try{q.connection=joinVoiceChannel({channelId:vc.id,guildId:vc.guild.id,adapterCreator:vc.guild.voiceAdapterCreator,selfDeaf:true}); q.playing=true; q.connection.on(VoiceConnectionStatus.Ready,()=>playSong(q.connection.joinConfig.guildId)); q.connection.on(VoiceConnectionStatus.Disconnected,async()=>{try{await Promise.race([new Promise(r=>q.connection.on(VoiceConnectionStatus.Connecting,()=>r())),new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),5000))]);}catch(e){q.playing=false;q.connection?.destroy();queues.delete(q.connection.joinConfig.guildId);}}); if(q.connection.state.status===VoiceConnectionStatus.Ready) playSong(q.connection.joinConfig.guildId); }catch(e){console.error(e);q.playing=false;queues.delete(i.guildId);} }
 
-// ============ HÀM PLAYSONG ĐÃ SỬA - KHÔNG NGỪNG ĐỘT NGỘT ============
 async function playSong(guildId) {
     const q = queues.get(guildId);
     if (!q?.connection || q.connection.state.status === VoiceConnectionStatus.Destroyed || q.connection.state.status === VoiceConnectionStatus.Disconnected) {
         if (q) { q.playing = false; queues.delete(guildId); }
         return;
     }
-    
     if (!q.songs.length) {
         if (q.autoplay) {
             try {
                 const guildHistory = history.get(guildId) || [];
                 const lastSong = guildHistory[guildHistory.length - 1];
                 if (lastSong) {
-                    const related = await play.search(lastSong.name, { source: { youtube: "video" }, limit: 5 });
+                    const related = await play.search(lastSong.name, { source: { soundcloud: "tracks" }, limit: 5 });
                     if (related && related.length > 1) {
                         const randomIndex = Math.floor(Math.random() * (related.length - 1)) + 1;
                         q.songs.push(related[randomIndex]);
-                        q.textChannel?.send(`🔄 Autoplay: **${related[randomIndex].name || related[randomIndex].title}**`).catch(() => {});
+                        q.textChannel?.send(`🔄 Autoplay: **${related[randomIndex].name}**`).catch(()=>{});
                     }
                 }
             } catch (e) { console.error('❌ Autoplay error:', e.message); }
         }
-        
         if (!q.songs.length) {
             console.log('📭 Hết bài, đợi 60 giây...');
-            const timeout = setTimeout(() => {
-                if (q.connection && q.connection.state.status !== VoiceConnectionStatus.Destroyed && !q.songs.length) {
-                    console.log('👋 Rời voice');
-                    q.playing = false;
-                    q.connection.destroy();
-                    queues.delete(guildId);
-                }
-            }, 60000);
-            q._idleTimeout = timeout;
+            setTimeout(() => { if (q.connection && q.connection.state.status !== VoiceConnectionStatus.Destroyed && !q.songs.length) { q.playing = false; q.connection.destroy(); queues.delete(guildId); } }, 60000);
             return;
         }
     }
     
-    // Hủy timeout cũ nếu có
-    if (q._idleTimeout) { clearTimeout(q._idleTimeout); q._idleTimeout = null; }
-    
     const song = q.songs[0];
-    
     try {
-        let stream = null;
-        let streamType = null;
-        const isSC = song.url?.includes('soundcloud');
+        let stream = null, streamType = null;
+        console.log(`🎵 Streaming: ${song.name} - ${song.url}`);
 
-        console.log(`🎵 Streaming: ${song.name || song.title}`);
-
-        if (!isSC) {
-            // === YOUTUBE: Dùng ytdl-core ===
-            try {
-                console.log('📺 YouTube: ytdl-core');
-                const ytStream = ytdl(song.url, {
-                    quality: 'lowestaudio',
-                    filter: 'audioonly',
-                    highWaterMark: 1 << 25,
-                    dlChunkSize: 0
-                });
-                
-                // Đợi stream sẵn sàng
-                await new Promise((resolve, reject) => {
-                    ytStream.once('readable', () => resolve());
-                    ytStream.once('error', (err) => reject(err));
-                    setTimeout(() => reject(new Error('ytdl timeout')), 10000);
-                });
-                
-                stream = ytStream;
-                streamType = 'opus';
-                console.log('✅ YouTube stream ready');
-            } catch (ytError) {
-                console.log(`❌ ytdl-core failed: ${ytError.message}`);
-                
-                // Fallback: play-dl
-                try {
-                    console.log('🔄 Fallback: play-dl');
-                    const result = await play.stream(song.url);
-                    if (result?.stream) {
-                        stream = result.stream;
-                        streamType = result.type;
-                        console.log('✅ play-dl fallback OK');
-                    }
-                } catch (pdError) {
-                    console.log(`❌ play-dl fallback failed: ${pdError.message}`);
-                }
-            }
-        } else {
-            // === SOUNDCLOUD: Dùng play-dl ===
-            try {
-                console.log('☁️ SoundCloud: play-dl');
-                const result = await play.stream(song.url);
-                if (result?.stream) {
-                    stream = result.stream;
-                    streamType = result.type;
-                    console.log('✅ SoundCloud stream ready');
-                }
-            } catch (scError) {
-                console.log(`❌ SoundCloud failed: ${scError.message}`);
-                
-                // Fallback: tìm kiếm lại
-                try {
-                    console.log('🔄 Tìm kiếm lại SoundCloud...');
-                    const results = await play.search(song.name || song.title, { source: { soundcloud: "tracks" }, limit: 3 });
-                    if (results?.length) {
-                        for (const r of results) {
-                            try {
-                                const result = await play.stream(r.url);
-                                if (result?.stream) {
-                                    stream = result.stream;
-                                    streamType = result.type;
-                                    console.log(`✅ SC fallback: ${r.name || r.title}`);
-                                    break;
-                                }
-                            } catch {}
-                        }
-                    }
-                } catch (searchError) {
-                    console.log(`❌ SC search fallback failed: ${searchError.message}`);
-                }
-            }
+        // Thử stream trực tiếp
+        try {
+            const result = await play.stream(song.url);
+            if (result?.stream) { stream = result.stream; streamType = result.type; }
+        } catch (e1) {
+            console.log(`❌ Cách 1 thất bại: ${e1.message}`);
         }
 
+        // Thử tìm kiếm lại
         if (!stream) {
-            throw new Error('Không thể stream - bỏ qua bài này');
+            try {
+                const results = await play.search(song.name, { source: { soundcloud: "tracks" }, limit: 5 });
+                if (results?.length) {
+                    for (const r of results) {
+                        try {
+                            const result = await play.stream(r.url);
+                            if (result?.stream) { stream = result.stream; streamType = result.type; q.songs[0] = r; console.log(`✅ Thay thế: ${r.name}`); break; }
+                        } catch {}
+                    }
+                }
+            } catch (e2) { console.log(`❌ Cách 2 thất bại: ${e2.message}`); }
         }
 
-        // Xác định input type
+        // Thử với soundcloud info
+        if (!stream) {
+            try {
+                const scInfo = await play.soundcloud(song.url);
+                if (scInfo?.url) {
+                    const result = await play.stream(scInfo.url);
+                    if (result?.stream) { stream = result.stream; streamType = result.type; }
+                }
+            } catch (e3) { console.log(`❌ Cách 3 thất bại: ${e3.message}`); }
+        }
+
+        if (!stream) throw new Error('Không thể stream');
+
         let it;
         switch(streamType) {
             case 'opus': it = StreamType.Opus; break;
             case 'ogg': case 'ogg/opus': it = StreamType.OggOpus; break;
             case 'webm': case 'webm/opus': it = StreamType.WebmOpus; break;
             case 'raw': it = StreamType.Raw; break;
-            default: it = StreamType.Opus;
+            default: it = StreamType.OggOpus;
         }
 
         q.resource = createAudioResource(stream, { inputType: it, inlineVolume: true });
@@ -501,62 +398,21 @@ async function playSong(guildId) {
         
         if (!q.player) {
             q.player = createAudioPlayer();
+            q.player.on('error', (e) => { console.error('❌ Player error:', e); q.songs.shift(); setTimeout(() => playSong(guildId), 1000); });
+            q.player.on('stateChange', (o, n) => { if (n.status === AudioPlayerStatus.Idle && o.status !== AudioPlayerStatus.Idle) { q.loop ? q.songs.push(q.songs.shift()) : q.songs.shift(); setTimeout(() => playSong(guildId), 500); } });
             q.connection.subscribe(q.player);
         }
         
-        // XÓA listener cũ trước khi thêm mới
-        q.player.removeAllListeners('error');
-        q.player.removeAllListeners('stateChange');
-        
-        q.player.on('error', (e) => {
-            console.error('❌ Player error:', e.message);
-            q.songs.shift();
-            q.resource = null;
-            setTimeout(() => playSong(guildId), 1000);
-        });
-        
-        q.player.on('stateChange', (o, n) => {
-            if (n.status === AudioPlayerStatus.Idle && o.status !== AudioPlayerStatus.Idle) {
-                console.log('⏹️ Bài hát kết thúc');
-                if (q.loop) {
-                    const current = q.songs.shift();
-                    if (current) q.songs.push(current);
-                } else {
-                    q.songs.shift();
-                }
-                q.resource = null;
-                setTimeout(() => playSong(guildId), 500);
-            }
-            
-            if (n.status === AudioPlayerStatus.Playing) {
-                console.log('▶️ Đang phát');
-            }
-            
-            if (n.status === AudioPlayerStatus.Buffering) {
-                console.log('🔄 Đang buffer...');
-            }
-        });
-        
         q.player.play(q.resource);
-        console.log('▶️ Phát:', song.name || song.title);
+        console.log('▶️ Phát:', song.name);
         
-        const src = isSC ? '☁️ SC' : '📺 YT';
-        q.textChannel?.send({
-            embeds: [new EmbedBuilder().setColor('#FF0000').setTitle('▶️ Đang phát')
-                .setDescription(`[${song.name||song.title}](${song.url})`)
-                .addFields(
-                    {name:'👤',value:song.user?.name||song.channel?.name||'?',inline:true},
-                    {name:'🔗',value:src,inline:true}
-                )]
-        }).catch(()=>{});
-        
+        q.textChannel?.send({ embeds: [new EmbedBuilder().setColor('#FF0000').setTitle('▶️ Đang phát').setDescription(`[${song.name}](${song.url})`).addFields({name:'👤',value:song.user?.name||'?',inline:true})] }).catch(()=>{});
         addToHistory(guildId, song);
         
     } catch (e) {
         console.error('❌ playSong error:', e.message);
-        q.textChannel?.send(`❌ Bỏ qua: \`${song.name||song.title}\` - ${e.message}`).catch(()=>{});
-        q.songs.shift();
-        q.resource = null;
+        q.textChannel?.send(`❌ Bỏ qua: \`${song.name}\` - ${e.message}`).catch(()=>{});
+        q.songs.shift(); q.resource = null;
         setTimeout(() => { if (q.songs.length) playSong(guildId); }, 2000);
     }
 }
